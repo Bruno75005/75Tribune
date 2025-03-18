@@ -1,0 +1,174 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                    String           @id @default(cuid())
+  email                 String           @unique
+  name                  String?
+  avatar                String?          // URL de l'avatar de l'utilisateur
+  password              String
+  role                  Role             @default(USER)
+  subscriptionType      SubscriptionType @default(FREE)
+  emailVerified         Boolean          @default(false)
+  emailVerificationToken String?         @unique
+  emailVerificationExpires DateTime?
+  passwordResetToken    String?          @unique
+  passwordResetExpires  DateTime?
+  lastLogin            DateTime?        // Ajout du champ lastLogin
+  articles              Article[]
+  comments              Comment[]
+  notifications         Notification[]
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+}
+
+model Article {
+  id              String      @id @default(cuid())
+  title           String
+  slug            String      @unique
+  excerpt         String
+  content         String      @db.Text
+  featuredImage   String?     // Image principale de l'article
+  status          ArticleStatus
+  accessLevel     AccessLevel
+  publishPlatforms Json?      // Plateformes où l'article est/sera publié (stocké en JSON)
+  categories      Category[]  @relation("ArticleToCategory")
+  tags            Tag[]       @relation("ArticleToTag")
+  comments        Comment[]
+  views           ArticleView[]
+  notifications   Notification[] // Ajout de la relation inverse
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  author          User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorId        String
+
+  @@index([authorId])
+}
+
+model Category {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  slug        String    @unique
+  description String?   @db.Text
+  order       Int       @default(0)
+  isActive    Boolean   @default(true)
+  
+  // Relations
+  articles    Article[] @relation("ArticleToCategory")
+  parent      Category? @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children    Category[] @relation("CategoryHierarchy")
+  parentId    String?
+
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([parentId])
+}
+
+model Tag {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  slug        String    @unique
+  articles    Article[] @relation("ArticleToTag")
+}
+
+model Comment {
+  id        String    @id @default(cuid())
+  content   String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  isApproved Boolean  @default(false)
+  author    User      @relation(fields: [authorId], references: [id])
+  authorId  String
+  article   Article   @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  articleId String
+
+  // Ajout des champs pour les réponses
+  parentId  String?
+  parent    Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   Comment[] @relation("CommentReplies")
+  
+  // Ajout de la relation inverse pour les notifications
+  notifications Notification[]
+
+  @@index([authorId])
+  @@index([articleId])
+  @@index([parentId])
+}
+
+model ArticleView {
+  id        String   @id @default(cuid())
+  article   Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  articleId String
+  viewedAt  DateTime @default(now())
+  viewedBy  String?  // ID de l'utilisateur si connecté
+  ip        String?  // IP pour les visiteurs anonymes
+
+  @@index([articleId])
+  @@index([viewedAt])
+}
+
+model Settings {
+  id            Int      @id @default(1)
+  siteName      String
+  siteUrl       String
+  contactEmail  String
+  adminEmail    String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+model AssistantContent {
+  id        String   @id @default(cuid())
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+}
+model Notification {
+  id          String      @id @default(cuid())
+  type        String      // 'COMMENT_REPLY' ou 'NEW_COMMENT'
+  content     String
+  isRead      Boolean     @default(false)
+  createdAt   DateTime    @default(now())
+  userId      String      // Utilisateur qui reçoit la notification
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  articleId   String?     // Pour les notifications de nouveaux commentaires
+  article     Article?    @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  commentId   String?     // ID du commentaire concerné
+  comment     Comment?    @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([articleId])
+  @@index([commentId])
+}
+
+enum Role {
+  USER
+  MODERATOR
+  ADMIN
+}
+
+enum SubscriptionType {
+  FREE
+  PREMIUM
+}
+
+enum ArticleStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum AccessLevel {
+  FREE
+  BASIC
+  PRO
+}

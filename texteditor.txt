@@ -1,0 +1,1843 @@
+C:\wamp64\www\75Tribune\src\app\(admin)\dashboard\articles\[action]\page.tsx:
+
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { X, Loader2 } from 'lucide-react';
+import RichTextEditor from '@/components/editor/RichTextEditor';
+import { toast } from 'react-hot-toast';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import ImageUpload from '@/components/shared/ImageUpload';
+
+interface ArticleFormData {
+  title: string;
+  excerpt: string;
+  content: string;
+  status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+  accessLevel: 'FREE' | 'BASIC' | 'PRO';
+  tags: string[];
+  categories: string[];
+  featuredImage?: string;
+  publishPlatforms?: string[];
+}
+
+interface ArticleFormPageProps {
+  params: { action: string; id?: string };
+}
+
+export default function ArticleFormPage({ params }: ArticleFormPageProps) {
+  const router = useRouter();
+  const isEditing = params.action === 'edit';
+
+  const [loading, setLoading] = useState(false);
+  const [isPublishingToWordPress, setIsPublishingToWordPress] = useState(false);
+
+  // État principal du formulaire
+  const [formData, setFormData] = useState<ArticleFormData>({
+    title: '',
+    excerpt: '',
+    content: '',
+    status: 'DRAFT',
+    accessLevel: 'FREE',
+    tags: [],
+    categories: [],
+    featuredImage: '',
+    publishPlatforms: [],
+  });
+
+  // État auxiliaire pour la liste de catégories et les tags en cours
+  const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
+  const [currentTag, setCurrentTag] = useState('');
+
+  // Drapeaux pour savoir si on a déjà généré titre/extrait (afin de ne pas écraser la saisie utilisateur)
+  const [didAutoTitle, setDidAutoTitle] = useState(false);
+  const [didAutoExcerpt, setDidAutoExcerpt] = useState(false);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 1) CHARGEMENT INITIAL : Catégories + Article (si on édite)
+  // ─────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    // Charger les catégories
+    const fetchCategories = async () => {
+      try {
+        const response = await fetch('/api/categories', { credentials: 'include' });
+        if (!response.ok) throw new Error('Erreur lors du chargement des catégories');
+        const data = await response.json();
+        setCategories(data);
+      } catch (error) {
+        console.error('Erreur:', error);
+        toast.error('Erreur lors du chargement des catégories');
+      }
+    };
+    fetchCategories();
+
+    // Si "edit", charger l'article existant
+    if (isEditing && params.id) {
+      (async () => {
+        setLoading(true);
+        try {
+          const response = await fetch(`/api/articles/${params.id}`, { credentials: 'include' });
+          if (!response.ok) throw new Error('Article non trouvé');
+          const data = await response.json();
+
+          setFormData({
+            title: data.title || '',
+            excerpt: data.excerpt || '',
+            content: data.content || '',
+            status: data.status || 'DRAFT',
+            accessLevel: data.accessLevel || 'FREE',
+            tags: data.tags?.map((t: any) => t.name) || [],
+            categories: data.categories?.map((c: any) => c.id) || [],
+            featuredImage: data.featuredImage || '',
+            publishPlatforms: data.publishPlatforms || [],
+          });
+        } catch (error) {
+          console.error("Erreur lors du chargement de l'article:", error);
+          toast.error("Erreur lors du chargement de l'article");
+          router.push('/dashboard/articles');
+        } finally {
+          setLoading(false);
+        }
+      })();
+    }
+  }, [isEditing, params.id, router]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 2) EXTRACTION AUTO DE TITRE & EXCERPT + APPEL A L’IA SI BESOIN
+  // ─────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    // Ne rien faire si pas de contenu
+    if (!formData.content) return;
+
+    // Ne rien faire si on a déjà un titre ET un excerpt
+    // ou si on est en cours d'édition et on a déjà défini un titre/excerpt
+    const userHasTitle = formData.title.trim().length > 0;
+    const userHasExcerpt = formData.excerpt.trim().length > 0;
+
+    // 2.a) Extraire depuis le HTML, seulement si on n'a pas encore un titre ou excerpt
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(formData.content, 'text/html');
+
+    // 2.b) Générer le titre si on n'en a pas, et qu'on n'a pas déjà fait un auto-titre
+    if (!userHasTitle && !didAutoTitle) {
+      const possibleHeading = doc.querySelector('h1, h2, h3');
+      if (possibleHeading?.textContent) {
+        const autoTitle = possibleHeading.textContent.trim();
+        if (autoTitle) {
+          setFormData((prev) => ({ ...prev, title: autoTitle }));
+          setDidAutoTitle(true); // Pour ne plus le regénérer ou l’écraser
+        } else {
+          // Si rien trouvé, on tente l’appel IA
+          callAIForTitle();
+        }
+      } else {
+        // Pas de heading => appel IA
+        callAIForTitle();
+      }
+    }
+
+    // 2.c) Générer l'excerpt si on n'en a pas, et qu'on n'a pas déjà fait un auto-excerpt
+    if (!userHasExcerpt && !didAutoExcerpt) {
+      const possibleParagraph = doc.querySelector('p');
+      if (possibleParagraph?.textContent) {
+        const rawText = possibleParagraph.textContent.trim();
+        const autoExcerpt = rawText.substring(0, 150) + (rawText.length > 150 ? '…' : '');
+        if (autoExcerpt) {
+          setFormData((prev) => ({ ...prev, excerpt: autoExcerpt }));
+        }
+      }
+      setDidAutoExcerpt(true); // On a tenté/généré un excerpt
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData.content]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // FONCTION POUR APPELER L’IA SI AUCUN TITRE N’EST TROUVÉ
+  // ─────────────────────────────────────────────────────────────────────────
+  async function callAIForTitle() {
+    try {
+      // Petit délai pour éviter spam si l'utilisateur tape
+      await new Promise((r) => setTimeout(r, 1000));
+
+      const aiResponse = await fetch('/api/ai/generateTitle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: formData.content,
+          model: 'mixtral8x7b',
+        }),
+      });
+
+      if (aiResponse.ok) {
+        const { suggestedTitle } = await aiResponse.json();
+        if (suggestedTitle && !didAutoTitle && !formData.title.trim()) {
+          setFormData((prev) => ({ ...prev, title: suggestedTitle }));
+          setDidAutoTitle(true);
+          toast.success(`Titre suggéré par l'IA : « ${suggestedTitle} »`);
+        }
+      }
+    } catch (e) {
+      console.error('Erreur appel IA :', e);
+      // En cas d’échec on ne fait rien, l’utilisateur pourra saisir manuellement
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 3) GESTION DES PLATEFORMES
+  // ─────────────────────────────────────────────────────────────────────────
+  const handlePublishToggle = (platform: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      publishPlatforms: prev.publishPlatforms?.includes(platform)
+        ? prev.publishPlatforms.filter((p) => p !== platform)
+        : [...(prev.publishPlatforms || []), platform],
+    }));
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 4) SOUMISSION DU FORMULAIRE
+  // ─────────────────────────────────────────────────────────────────────────
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.title.trim() || !formData.content.trim()) {
+      return toast.error('Le titre et le contenu sont requis');
+    }
+    setLoading(true);
+
+    try {
+      const payload = {
+        title: formData.title.trim(),
+        content: formData.content.trim(),
+        excerpt: formData.excerpt?.trim() || '',
+        status: formData.status,
+        accessLevel: formData.accessLevel,
+        tags: formData.tags,
+        categories: formData.categories,
+        featuredImage: formData.featuredImage,
+        publishPlatforms: formData.publishPlatforms,
+      };
+
+      const url = isEditing ? `/api/articles/${params.id}` : '/api/articles';
+      const method = isEditing ? 'PUT' : 'POST';
+
+      // Envoi principal
+      const response = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Erreur lors de la sauvegarde');
+      }
+
+      // Publication WordPress si coché
+      if (formData.publishPlatforms?.includes('wordpress')) {
+        setIsPublishingToWordPress(true);
+        toast.loading('Publication WordPress en cours…', { id: 'wp-publish' });
+
+        try {
+          const wpResponse = await fetch('/api/publish/wordpress', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(payload),
+          });
+
+          const wpData = await wpResponse.json();
+          if (wpResponse.ok) {
+            toast.success(`Publié sur WordPress : ${wpData.url}`, { id: 'wp-publish' });
+          } else {
+            throw new Error(wpData.error || 'Erreur WordPress');
+          }
+        } catch (wpError) {
+          toast.error('Échec de la publication WordPress', { id: 'wp-publish' });
+          console.error('Erreur WordPress:', wpError);
+        } finally {
+          setIsPublishingToWordPress(false);
+        }
+      }
+
+      toast.success(isEditing ? 'Article mis à jour !' : 'Article créé avec succès !');
+      router.push('/dashboard/articles');
+    } catch (error) {
+      toast.error('Erreur globale : ' + (error as Error).message);
+      console.error('Erreur:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 5) GESTION DES TAGS
+  // ─────────────────────────────────────────────────────────────────────────
+  const addTag = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && currentTag.trim()) {
+      e.preventDefault();
+      if (!formData.tags.includes(currentTag.trim())) {
+        setFormData((prev) => ({ ...prev, tags: [...prev.tags, currentTag.trim()] }));
+      }
+      setCurrentTag('');
+    }
+  };
+
+  const removeTag = (tagToRemove: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      tags: prev.tags.filter((tag) => tag !== tagToRemove),
+    }));
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 6) UPLOAD / SUPPRESSION D’IMAGE
+  // ─────────────────────────────────────────────────────────────────────────
+  const handleImageUpload = (imageUrl: string) => {
+    setFormData((prev) => ({ ...prev, featuredImage: imageUrl }));
+  };
+
+  const handleImageRemove = () => {
+    setFormData((prev) => ({ ...prev, featuredImage: '' }));
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // RENDU DU COMPOSANT
+  // ─────────────────────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="container p-4 w-full">
+      <div className="mb-6">
+        <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">
+          {isEditing ? "Modifier l'article" : 'Nouvel article'}
+        </h1>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-6">
+        {/* Image mise en avant */}
+        <div className="space-y-2">
+          <Label htmlFor="featuredImage">Image mise en avant</Label>
+          <ImageUpload
+            value={formData.featuredImage}
+            onChange={handleImageUpload}
+            onRemove={handleImageRemove}
+          />
+        </div>
+
+        {/* Titre */}
+        <div>
+          <Label htmlFor="title">Titre</Label>
+          <input
+            type="text"
+            id="title"
+            value={formData.title}
+            onChange={(e) => {
+              setFormData((prev) => ({ ...prev, title: e.target.value }));
+              // Si l'utilisateur modifie manuellement le titre, on considère qu'il ne doit plus être auto-géré
+              setDidAutoTitle(true);
+            }}
+            className="mt-1 block w-full px-4 py-2 rounded-lg border dark:border-gray-600
+                       focus:ring-2 focus:ring-primary-500 focus:border-primary-500
+                       dark:bg-gray-700 dark:text-white"
+            required
+          />
+        </div>
+
+        {/* Extrait */}
+        <div>
+          <Label htmlFor="excerpt">Extrait</Label>
+          <textarea
+            id="excerpt"
+            value={formData.excerpt}
+            onChange={(e) => {
+              setFormData((prev) => ({ ...prev, excerpt: e.target.value }));
+              // Si l'utilisateur modifie manuellement l'excerpt, on considère qu'il ne doit plus être auto-géré
+              setDidAutoExcerpt(true);
+            }}
+            rows={3}
+            className="mt-1 block w-full px-4 py-2 rounded-lg border dark:border-gray-600
+                       focus:ring-2 focus:ring-primary-500 focus:border-primary-500
+                       dark:bg-gray-700 dark:text-white"
+          />
+        </div>
+
+        {/* Plateformes de publication */}
+        <div>
+          <Label className="text-gray-700 dark:text-gray-300 mb-2 block">
+            Plateformes de publication
+          </Label>
+          <div className="flex flex-row gap-4">
+            {['wordpress', 'youtube', 'twitter'].map((platform) => (
+              <div
+                key={platform}
+                className="flex-1 flex items-center justify-between p-2 rounded-lg
+                           bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700"
+              >
+                <span className="text-sm text-gray-700 dark:text-gray-300 capitalize">
+                  {platform}
+                </span>
+                <Switch
+                  checked={formData.publishPlatforms?.includes(platform)}
+                  onCheckedChange={() => handlePublishToggle(platform)}
+                  className={cn(
+                    formData.publishPlatforms?.includes(platform)
+                      ? 'bg-primary'
+                      : 'bg-gray-200 dark:bg-gray-700'
+                  )}
+                />
+              </div>
+            ))}
+          </div>
+
+          {isPublishingToWordPress && (
+            <div className="flex items-center space-x-2 text-sm text-gray-500
+                            dark:text-gray-400 mt-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span>Publication WordPress en cours…</span>
+            </div>
+          )}
+        </div>
+
+        {/* Catégories */}
+        <div className="space-y-2">
+          <Label className="block text-sm font-medium text-gray-700 dark:text-gray-200">
+            Catégories
+          </Label>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            {categories.map((category) => (
+              <div key={category.id} className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id={`category-${category.id}`}
+                  checked={formData.categories.includes(category.id)}
+                  onChange={(e) => {
+                    const isChecked = e.target.checked;
+                    setFormData((prev) => ({
+                      ...prev,
+                      categories: isChecked
+                        ? [...prev.categories, category.id]
+                        : prev.categories.filter((catId) => catId !== category.id),
+                    }));
+                  }}
+                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                />
+                <Label
+                  htmlFor={`category-${category.id}`}
+                  className="text-sm text-gray-700 dark:text-gray-200"
+                >
+                  {category.name}
+                </Label>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Contenu (éditeur TipTap) */}
+        <div>
+          <Label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-2">
+            Contenu
+          </Label>
+          <RichTextEditor
+            content={formData.content}
+            onChange={(content) => {
+              setFormData((prev) => ({ ...prev, content }));
+            }}
+          />
+        </div>
+
+        {/* Tags */}
+        <div>
+          <Label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-2">
+            Tags
+          </Label>
+          <div className="flex flex-wrap gap-2 mb-2">
+            {formData.tags.map((tag) => (
+              <span
+                key={tag}
+                className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium
+                           bg-primary-100 text-primary-800 dark:bg-primary-900 dark:text-primary-200"
+              >
+                {tag}
+                <button
+                  type="button"
+                  onClick={() => removeTag(tag)}
+                  className="ml-2 inline-flex items-center hover:text-primary-900 dark:hover:text-primary-100"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </span>
+            ))}
+          </div>
+          <input
+            type="text"
+            value={currentTag}
+            onChange={(e) => setCurrentTag(e.target.value)}
+            onKeyDown={addTag}
+            placeholder="Ajouter un tag (Entrée pour valider)"
+            className="mt-1 block w-full px-4 py-2 rounded-lg border dark:border-gray-600
+                       focus:ring-2 focus:ring-primary-500 focus:border-primary-500
+                       dark:bg-gray-700 dark:text-white"
+          />
+        </div>
+
+        {/* Statut & niveau d'accès */}
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <div>
+            <Label htmlFor="status" className="block text-sm font-medium text-gray-700
+                                              dark:text-gray-200 mb-2">
+              Statut
+            </Label>
+            <select
+              id="status"
+              value={formData.status}
+              onChange={(e) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  status: e.target.value as 'DRAFT' | 'PUBLISHED' | 'ARCHIVED',
+                }))
+              }
+              className="mt-1 block w-full px-4 py-2 rounded-lg border dark:border-gray-600
+                         focus:ring-2 focus:ring-primary-500 focus:border-primary-500
+                         dark:bg-gray-700 dark:text-white"
+            >
+              <option value="DRAFT">Brouillon</option>
+              <option value="PUBLISHED">Publié</option>
+              <option value="ARCHIVED">Archivé</option>
+            </select>
+          </div>
+
+          <div>
+            <Label htmlFor="accessLevel" className="block text-sm font-medium text-gray-700
+                                                   dark:text-gray-200 mb-2">
+              Niveau d'accès
+            </Label>
+            <select
+              id="accessLevel"
+              value={formData.accessLevel}
+              onChange={(e) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  accessLevel: e.target.value as 'FREE' | 'BASIC' | 'PRO',
+                }))
+              }
+              className="mt-1 block w-full px-4 py-2 rounded-lg border dark:border-gray-600
+                         focus:ring-2 focus:ring-primary-500 focus:border-primary-500
+                         dark:bg-gray-700 dark:text-white"
+            >
+              <option value="FREE">Gratuit</option>
+              <option value="BASIC">Basic</option>
+              <option value="PRO">Pro</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Boutons d’action */}
+        <div className="flex justify-end space-x-4">
+          <Button
+            type="button"
+            onClick={() => router.back()}
+            className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200
+                       bg-white dark:bg-gray-800 border dark:border-gray-600 rounded-lg
+                       hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            Annuler
+          </Button>
+          <Button
+            type="submit"
+            disabled={loading}
+            className="px-4 py-2 text-sm font-medium text-white bg-primary
+                       hover:bg-primary/90 rounded-lg disabled:opacity-50"
+          >
+            {loading ? 'En cours...' : isEditing ? 'Mettre à jour' : 'Créer'}
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
+}
+C:\wamp64\www\75Tribune\src\components\editor\RichTextEditor.tsx:
+'use client';
+
+import { useState } from 'react';
+import dynamic from 'next/dynamic';
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import Image from '@tiptap/extension-image';
+import Link from '@tiptap/extension-link';
+import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
+import { createLowlight } from 'lowlight';
+import js from 'highlight.js/lib/languages/javascript';
+import python from 'highlight.js/lib/languages/python';
+import html from 'highlight.js/lib/languages/xml';
+import css from 'highlight.js/lib/languages/css';
+import {
+  Bold,
+  Italic,
+  List,
+  ListOrdered,
+  Quote,
+  Undo,
+  Redo,
+  Link as LinkIcon,
+  Image as ImageIcon,
+  Code,
+} from 'lucide-react';
+
+import AIAssistant from './AIAssistant';
+import ImageUpload from './ImageUpload';
+
+/* ------------------------------------------------------------------
+   1) Configuration du lowlight (pour la coloration syntaxique)
+------------------------------------------------------------------ */
+const lowlight = createLowlight();
+lowlight.register('javascript', js);
+lowlight.register('python', python);
+lowlight.register('html', html);
+lowlight.register('css', css);
+
+/* ------------------------------------------------------------------
+   2) Props du composant "RichTextEditor"
+------------------------------------------------------------------ */
+interface RichTextEditorProps {
+  /** Contenu HTML initial que vous passez depuis le parent */
+  content: string;
+  /** Fonction pour récupérer les mises à jour de contenu */
+  onChange: (content: string) => void;
+  /** Optionnel: fonction à appeler pour publier */
+  onPublish?: (destinations: any[]) => void;
+  /** Afficher ou non la partie publication */
+  showPublishOptions?: boolean;
+}
+
+/* ------------------------------------------------------------------
+   3) Composant "MenuBar" = barre d'outils
+------------------------------------------------------------------ */
+const MenuBar = ({ editor }: { editor: any }) => {
+  if (!editor) {
+    return null;
+  }
+
+  const addImage = () => {
+    const url = window.prompt("URL de l'image:");
+    if (url) {
+      editor.chain().focus().setImage({ src: url }).run();
+    }
+  };
+
+  const setLink = () => {
+    const url = window.prompt('URL:');
+    if (url) {
+      editor.chain().focus().setLink({ href: url }).run();
+    }
+  };
+
+  const addCodeBlock = () => {
+    const language = window.prompt('Langage (ex: javascript, python):', 'javascript');
+    if (language) {
+      editor.chain().focus().toggleCodeBlock({ language }).run();
+    }
+  };
+
+  return (
+    <div className="border-b border-gray-200 p-2 mb-4 flex flex-wrap gap-2">
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleBold().run()}
+        className={`p-2 rounded hover:bg-gray-100 ${
+          editor.isActive('bold') ? 'bg-gray-100' : ''
+        }`}
+      >
+        <Bold className="w-5 h-5" />
+      </button>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleItalic().run()}
+        className={`p-2 rounded hover:bg-gray-100 ${
+          editor.isActive('italic') ? 'bg-gray-100' : ''
+        }`}
+      >
+        <Italic className="w-5 h-5" />
+      </button>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleBulletList().run()}
+        className={`p-2 rounded hover:bg-gray-100 ${
+          editor.isActive('bulletList') ? 'bg-gray-100' : ''
+        }`}
+      >
+        <List className="w-5 h-5" />
+      </button>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleOrderedList().run()}
+        className={`p-2 rounded hover:bg-gray-100 ${
+          editor.isActive('orderedList') ? 'bg-gray-100' : ''
+        }`}
+      >
+        <ListOrdered className="w-5 h-5" />
+      </button>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleBlockquote().run()}
+        className={`p-2 rounded hover:bg-gray-100 ${
+          editor.isActive('blockquote') ? 'bg-gray-100' : ''
+        }`}
+      >
+        <Quote className="w-5 h-5" />
+      </button>
+      <button
+        type="button"
+        onClick={setLink}
+        className={`p-2 rounded hover:bg-gray-100 ${
+          editor.isActive('link') ? 'bg-gray-100' : ''
+        }`}
+      >
+        <LinkIcon className="w-5 h-5" />
+      </button>
+      <button
+        type="button"
+        onClick={addImage}
+        className="p-2 rounded hover:bg-gray-100"
+      >
+        <ImageIcon className="w-5 h-5" />
+      </button>
+      <button
+        type="button"
+        onClick={addCodeBlock}
+        className={`p-2 rounded hover:bg-gray-100 ${
+          editor.isActive('codeBlock') ? 'bg-gray-100' : ''
+        }`}
+      >
+        <Code className="w-5 h-5" />
+      </button>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().undo().run()}
+        className="p-2 rounded hover:bg-gray-100"
+      >
+        <Undo className="w-5 h-5" />
+      </button>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().redo().run()}
+        className="p-2 rounded hover:bg-gray-100"
+      >
+        <Redo className="w-5 h-5" />
+      </button>
+    </div>
+  );
+};
+
+/* ------------------------------------------------------------------
+   4) Composant interne "RichTextEditorContent"
+   Cet éditeur Tiptap se base sur la "value" initiale,
+   et appelle onChange() à chaque mise à jour.
+------------------------------------------------------------------ */
+const RichTextEditorContent = ({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (content: string) => void;
+}) => {
+  // capture la "value" initiale dans un state local :
+  const [initialValue] = useState(value);
+
+  // Setup Tiptap Editor
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        codeBlock: false,
+        heading: { levels: [1, 2, 3] },
+        bulletList: { keepMarks: true, keepAttributes: false },
+        orderedList: { keepMarks: true, keepAttributes: false },
+      }),
+      Image.configure({
+        HTMLAttributes: {
+          class: 'max-w-full h-auto rounded-lg',
+        },
+        allowBase64: true,
+      }),
+      Link.configure({
+        openOnClick: false,
+        HTMLAttributes: {
+          class: 'text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300',
+        },
+      }),
+      CodeBlockLowlight.configure({
+        lowlight,
+        HTMLAttributes: {
+          class: 'rounded-lg p-4 bg-gray-100 dark:bg-gray-800',
+        },
+      }),
+    ],
+    // On n'utilise QUE la "initialValue" pour éviter de réécraser en continu
+    content: initialValue,
+    onUpdate: ({ editor }) => {
+      // À chaque frappe, on remonte le HTML dans onChange
+      onChange(editor.getHTML());
+    },
+    editorProps: {
+      attributes: {
+        class: 'prose dark:prose-invert max-w-none focus:outline-none min-h-[200px] p-4',
+      },
+      handleDrop: (view, event, slice, moved) => {
+        if (!moved && event.dataTransfer?.files.length) {
+          const file = event.dataTransfer.files[0];
+          if (file.type.startsWith('image/')) {
+            // TODO: Gérer le drop d'image
+            return true;
+          }
+        }
+        return false;
+      },
+      handlePaste: (view, event) => {
+        if (event.clipboardData?.files.length) {
+          const file = event.clipboardData.files[0];
+          if (file.type.startsWith('image/')) {
+            // TODO: Gérer le collage d'image
+            return true;
+          }
+        }
+        return false;
+      },
+    },
+    immediatelyRender: false,
+  });
+
+  // Gestion d'insertion de suggestions IA
+  const handleAISuggestion = (suggestion: string) => {
+    if (editor) {
+      editor.chain().focus().insertContent(suggestion).run();
+    }
+  };
+
+  // Gestion d'upload d'image (ex: via URL)
+  const handleImageUpload = (url: string) => {
+    if (editor) {
+      editor.chain().focus().setImage({ src: url }).run();
+    }
+  };
+
+  if (!editor) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Barre d'outils */}
+      <div className="w-full border rounded-lg overflow-hidden dark:border-gray-700">
+        <MenuBar editor={editor} />
+        {/* Zone pour upload direct (bouton) */}
+        <div className="border-t dark:border-gray-700">
+          <ImageUpload onUpload={handleImageUpload} />
+        </div>
+        {/* Zone d'édition */}
+        <div className="border-t dark:border-gray-700">
+          <EditorContent editor={editor} />
+        </div>
+      </div>
+
+      {/* Assistant IA */}
+      <div className="border-t pt-4 dark:border-gray-700">
+        <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+          Assistant IA
+        </h3>
+        <AIAssistant onSuggestion={handleAISuggestion} />
+      </div>
+    </div>
+  );
+};
+
+/* ------------------------------------------------------------------
+   5) Composant "RichTextEditor" final
+   => C'est celui que vous importez dans vos pages
+------------------------------------------------------------------ */
+const RichTextEditor = ({
+  content,
+  onChange,
+  onPublish,
+  showPublishOptions = true,
+}: RichTextEditorProps) => {
+  // On importe dynamiquement RichTextEditorContent si on veut le SSR: false
+  // Mais ici, tout est dans le même fichier ; vous n’avez plus besoin du dynamic import
+  // (ou vous pouvez l'utiliser comme avant, si vous voulez).
+  // Pour la démo, on ne fait pas de dynamic import supplémentaire.
+
+  return (
+    <div className="space-y-4">
+      {/* L'éditeur */}
+      <div>
+        <RichTextEditorContent
+          value={content}
+          onChange={onChange}
+        />
+      </div>
+
+      {/* Options de publication (facultatif) */}
+      {showPublishOptions && onPublish && (
+        <div className="mt-4 space-y-4">
+          <div className="flex justify-end">
+            <button
+              onClick={() => onPublish([])}
+              className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90"
+            >
+              Publier sur les plateformes sélectionnées
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default RichTextEditor;
+C:\wamp64\www\75Tribune\src\app\api\ai\generate\route.ts:
+import { NextResponse } from 'next/server';
+
+const PROMPT_TEMPLATES = {
+  introduction: `En tant qu'expert en rédaction, génère une introduction captivante pour cet article. L'introduction doit :
+1. Accrocher le lecteur dès les premières lignes
+2. Présenter clairement le sujet et son importance
+3. Donner un aperçu des points qui seront abordés
+4. Utiliser le ton spécifié
+5. Ne pas dépasser 3-4 phrases
+
+Sujet de l'article : `,
+
+  conclusion: `En tant qu'expert en rédaction, génère une conclusion efficace et mémorable pour cet article. La conclusion doit :
+1. Résumer les points clés de manière concise
+2. Offrir une réflexion finale pertinente
+3. Se terminer par un appel à l'action ou une ouverture
+4. Utiliser le ton spécifié
+5. Ne pas dépasser 3-4 phrases
+
+Points clés de l'article : `,
+
+  title: `En tant qu'expert en rédaction, propose un TITRE percutant pour cet article. Le titre doit :
+1. Être court, clair et accrocheur
+2. Faire comprendre directement le thème
+3. Employer le ton spécifié
+4. Ne pas dépasser 80 caractères
+
+Contenu de l'article ou sujet : `
+};
+
+const TONE_INSTRUCTIONS = {
+  professional: "Adopte un ton professionnel, formel et expert.",
+  friendly: "Utilise un ton amical, chaleureux et accessible.",
+  informative: "Garde un ton informatif, clair et pédagogique.",
+  humorous: "Ajoute une touche d'humour léger et approprié.",
+  motivational: "Emploie un ton motivant et encourageant.",
+  empathetic: "Montre de l'empathie et de la compréhension.",
+  direct: "Va droit au but avec un ton direct et concis.",
+  creative: "Sois créatif et original dans ton approche.",
+  serious: "Maintiens un ton sérieux et posé.",
+  optimistic: "Adopte un ton optimiste et positif.",
+  enthusiastic: "Montre de l'enthousiasme et de la passion.",
+  persuasive: "Utilise un ton persuasif et convaincant.",
+  neutral: "Reste neutre et objectif.",
+  strict: "Adopte un ton strict et rigoureux.",
+  sincere: "Sois sincère et authentique.",
+  technical: "Utilise un ton technique et précis.",
+  academic: "Adopte un style académique et savant."
+};
+
+export async function POST(request: Request) {
+  try {
+    // On récupère le JSON envoyé par le client
+    const { prompt, model = 'mistral', tone = 'professional' } = await request.json();
+
+    if (!prompt) {
+      return NextResponse.json(
+        { error: 'Aucun prompt fourni' },
+        { status: 400 }
+      );
+    }
+
+    // 1) Choix du ton (ou fallback sur "professional" si invalide)
+    const toneInstruction = TONE_INSTRUCTIONS[tone as keyof typeof TONE_INSTRUCTIONS]
+      || TONE_INSTRUCTIONS.professional;
+
+    // 2) Déterminer s’il s’agit d’une demande "introduction", "conclusion" ou "title"
+    //    => On adapte le template en fonction des mots-clés détectés.
+    let finalPrompt = prompt;
+    const promptLower = prompt.toLowerCase();
+
+    if (promptLower.includes('introduction')) {
+      finalPrompt = PROMPT_TEMPLATES.introduction + prompt;
+    } else if (promptLower.includes('conclusion')) {
+      finalPrompt = PROMPT_TEMPLATES.conclusion + prompt;
+    } else if (promptLower.includes('title') || promptLower.includes('titre')) {
+      finalPrompt = PROMPT_TEMPLATES.title + prompt;
+    }
+
+    // 3) Ajouter l’instruction de ton en en-tête
+    finalPrompt = `${toneInstruction}\n\n${finalPrompt}`;
+
+    // 4) Appel Ollama
+    const response = await fetch('http://localhost:11434/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: model,
+        prompt: finalPrompt,
+        stream: false,
+        options: {
+          temperature: 0.7,
+          top_p: 0.9,
+          top_k: 40,
+          max_tokens: 300
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      return NextResponse.json({ error: error.message }, { status: response.status });
+    }
+
+    // 5) Renvoyer la réponse d’Ollama (data.response)
+    const data = await response.json();
+    return NextResponse.json({ content: data.response });
+  } catch (error) {
+    console.error('Erreur de génération:', error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Erreur lors de la génération' },
+      { status: 500 }
+    );
+  }
+}
+
+C:\wamp64\www\75Tribune\src\components\editor\RichTextEditorContent.tsx:
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import Image from '@tiptap/extension-image';
+import Link from '@tiptap/extension-link';
+import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
+import { common, createLowlight } from 'lowlight';
+import { Copy, Check } from 'lucide-react';
+import TextAlign from '@tiptap/extension-text-align';
+import Placeholder from '@tiptap/extension-placeholder';
+import Typography from '@tiptap/extension-typography';
+import Highlight from '@tiptap/extension-highlight';
+import Color from '@tiptap/extension-color';
+import TextStyle from '@tiptap/extension-text-style';
+import Underline from '@tiptap/extension-underline';
+import Superscript from '@tiptap/extension-superscript';
+import Subscript from '@tiptap/extension-subscript';
+import Table from '@tiptap/extension-table';
+import TableRow from '@tiptap/extension-table-row';
+import TableCell from '@tiptap/extension-table-cell';
+import TableHeader from '@tiptap/extension-table-header';
+
+import {
+  Bold,
+  Italic,
+  List,
+  ListOrdered,
+  Quote,
+  Link as LinkIcon,
+  Image as ImageIcon,
+  Code,
+  Undo,
+  Redo,
+  Sparkles,
+  Loader2,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
+  AlignJustify,
+  Underline as UnderlineIcon,
+  Table as TableIcon,
+} from 'lucide-react';
+import {
+  useState, useEffect, useCallback
+} from 'react';
+
+interface RichTextEditorProps {
+  value: string;
+  onChange: (content: string) => void;
+}
+
+const AI_MODELS = [
+  { id: 'codellama:latest', name: 'Code Llama (Latest)' },
+  { id: 'codellama:13b', name: 'Code Llama (13B)' },
+  { id: 'qwen2.5-coder:14b', name: 'Qwen 2.5 Coder (14B)' },
+  { id: 'mixtral:8x7b', name: 'Mixtral 8x7B' },
+  { id: 'qwen2.5:7b', name: 'Qwen 2.5 (7B)' },
+  { id: 'llama3:latest', name: 'LLaMA 3 (Latest)' },
+  { id: 'llama3.2:latest', name: 'LLaMA 3.2 (Latest)' },
+  { id: 'llava:34b', name: 'LLaVA 34B' },
+  { id: 'deepseek-r1:14b', name: 'DeepSeek R1 (14B)' },
+  { id: 'nomic-embed-text:latest', name: 'Nomic Embed Text' }
+];
+
+const TONES = [
+  { id: 'professional', name: 'Professionnel' },
+  { id: 'friendly', name: 'Amical' },
+  { id: 'informative', name: 'Informatif' },
+  { id: 'humorous', name: 'Humoristique' },
+  { id: 'motivational', name: 'Motivant' },
+  { id: 'empathetic', name: 'Empathique' },
+  { id: 'direct', name: 'Direct' },
+  { id: 'creative', name: 'Créatif' },
+  { id: 'serious', name: 'Sérieux' },
+  { id: 'optimistic', name: 'Optimiste' },
+  { id: 'enthusiastic', name: 'Enthousiaste' },
+  { id: 'persuasive', name: 'Persuasif' },
+  { id: 'neutral', name: 'Neutre' },
+  { id: 'strict', name: 'Sévère' },
+  { id: 'sincere', name: 'Sincère' },
+  { id: 'romantic', name: 'Romantique' },
+  { id: 'poetic', name: 'Poétique' },
+  { id: 'playful', name: 'Ludique' },
+  { id: 'inspiring', name: 'Inspirant' },
+  { id: 'ironic', name: 'Ironique' },
+  { id: 'sarcastic', name: 'Sarcastique' },
+  { id: 'mysterious', name: 'Mystérieux' },
+  { id: 'nostalgic', name: 'Nostalgique' },
+  { id: 'authoritative', name: 'Autoritaire' },
+  { id: 'benevolent', name: 'Bienveillant' },
+  { id: 'academic', name: 'Académique' },
+  { id: 'technical', name: 'Technique' },
+  { id: 'exaggerated', name: 'Exagéré' },
+  { id: 'provocative', name: 'Provocateur' },
+  { id: 'thoughtful', name: 'Réfléchi' },
+];
+
+// Liste des langages supportés par Prism
+const SUPPORTED_LANGUAGES = {
+  markup: 'HTML',
+  html: 'HTML',
+  xml: 'XML',
+  svg: 'SVG',
+  mathml: 'MathML',
+  ssml: 'SSML',
+  atom: 'ATOM',
+  rss: 'RSS',
+  css: 'CSS',
+  clike: 'C-like',
+  javascript: 'JavaScript',
+  js: 'JavaScript',
+  jsx: 'JSX',
+  typescript: 'TypeScript',
+  ts: 'TypeScript',
+  tsx: 'TSX',
+  php: 'PHP',
+  python: 'Python',
+  py: 'Python',
+  ruby: 'Ruby',
+  rb: 'Ruby',
+  go: 'Go',
+  rust: 'Rust',
+  sql: 'SQL',
+  bash: 'Bash',
+  shell: 'Shell',
+  json: 'JSON',
+  yaml: 'YAML',
+  yml: 'YAML',
+  markdown: 'Markdown',
+  md: 'Markdown',
+} as const;
+
+// Fonction pour normaliser le langage
+function normalizeLanguage(lang: string): string {
+  // Enlever le préfixe 'language-' s'il existe
+  const cleanLang = lang.replace(/^language-/, '').toLowerCase();
+  
+  // Correspondances spécifiques
+  const languageMap: { [key: string]: string } = {
+    js: 'javascript',
+    py: 'python',
+    rb: 'ruby',
+    ts: 'typescript',
+    yml: 'yaml',
+    md: 'markdown',
+    html: 'markup',
+    xml: 'markup',
+    svg: 'markup',
+    mathml: 'markup',
+    ssml: 'markup',
+    atom: 'markup',
+    rss: 'markup'
+  };
+
+  return languageMap[cleanLang] || cleanLang;
+}
+
+// Extension personnalisée pour les blocs de code
+const lowlight = createLowlight(common);
+
+const CustomCodeBlock = CodeBlockLowlight.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      language: {
+        default: 'text',
+        parseHTML: element => {
+          // Essayer de détecter le langage à partir de la classe
+          const codeElement = element.querySelector('code');
+          if (codeElement) {
+            const classes = codeElement.className.split(' ');
+            for (const cls of classes) {
+              if (cls.startsWith('language-')) {
+                const lang = cls.replace('language-', '');
+                const normalizedLang = normalizeLanguage(lang);
+                return normalizedLang;
+              }
+            }
+          }
+          
+          // Si aucun langage n'est spécifié, essayer de détecter à partir du contenu
+          const content = element.textContent || '';
+          
+          // Détection basée sur le contenu
+          if (content.includes('def ') || content.includes('import ') || content.match(/:\s*$/m)) {
+            return 'python';
+          }
+          if (content.includes('function ') || content.includes('const ') || content.includes('let ') || content.match(/=>/)) {
+            return 'javascript';
+          }
+          if (content.includes('interface ') || content.includes('type ') || content.includes(': ')) {
+            return 'typescript';
+          }
+          if (content.match(/<\/?[a-z][\s\S]*>/i)) {
+            return 'html';
+          }
+          if (content.includes('SELECT ') || content.includes('FROM ') || content.includes('WHERE ')) {
+            return 'sql';
+          }
+          if (content.match(/^[\s\S]*\{[\s\S]*\}[\s\S]*$/)) {
+            return 'json';
+          }
+          if (content.startsWith('<?php')) {
+            return 'php';
+          }
+          
+          return 'text';
+        },
+        renderHTML: attributes => {
+          return {
+            'data-language': attributes.language,
+          };
+        },
+      },
+    };
+  },
+  addNodeView() {
+    return ({ node, editor }) => {
+      const container = document.createElement('div');
+      container.className = 'not-prose my-8 overflow-hidden rounded-lg border border-gray-700 dark:bg-gray-900';
+
+      // En-tête avec le nom du langage et le bouton copier
+      const header = document.createElement('div');
+      header.className = 'flex items-center justify-between px-4 py-2 text-xs text-gray-400 border-b border-gray-700';
+      
+      const lang = node.attrs.language || 'text';
+      const normalizedLang = normalizeLanguage(lang);
+      const displayLang = SUPPORTED_LANGUAGES[normalizedLang as keyof typeof SUPPORTED_LANGUAGES] || lang.toUpperCase();
+      
+      // Affichage du langage
+      const langDisplay = document.createElement('span');
+      langDisplay.className = 'font-mono';
+      langDisplay.textContent = displayLang;
+      header.appendChild(langDisplay);
+
+      // Bouton de copie
+      const copyButton = document.createElement('button');
+      copyButton.className = 'flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-700 dark:hover:bg-gray-800 transition-colors';
+      copyButton.title = 'Copier le code';
+      copyButton.innerHTML = '<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 4H6a2 2 0 00-2 2v12a2 2 0 002 2h8a2 2 0 002-2v-2M8 4v12a2 2 0 002 2h8a2 2 0 002-2V8l-6-4H8z"/></svg><span>Copier</span>';
+      
+      copyButton.addEventListener('click', () => {
+        const code = node.textContent;
+        navigator.clipboard.writeText(code).then(() => {
+          copyButton.innerHTML = '<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6L9 17l-5-5"/></svg><span>Copié!</span>';
+          setTimeout(() => {
+            copyButton.innerHTML = '<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 4H6a2 2 0 00-2 2v12a2 2 0 002 2h8a2 2 0 002-2v-2M8 4v12a2 2 0 002 2h8a2 2 0 002-2V8l-6-4H8z"/></svg><span>Copier</span>';
+          }, 2000);
+        });
+      });
+      
+      header.appendChild(copyButton);
+      container.appendChild(header);
+
+      // Bloc de code
+      const pre = document.createElement('pre');
+      pre.className = 'p-4 text-sm overflow-x-auto';
+      pre.style.margin = '0';
+      container.appendChild(pre);
+
+      return {
+        dom: container,
+        contentDOM: pre,
+        update: (updatedNode) => {
+          if (updatedNode.type !== node.type) return false;
+          
+          // Mettre à jour le langage affiché si nécessaire
+          const updatedLang = updatedNode.attrs.language || 'text';
+          const updatedNormalizedLang = normalizeLanguage(updatedLang);
+          const updatedDisplayLang = SUPPORTED_LANGUAGES[updatedNormalizedLang as keyof typeof SUPPORTED_LANGUAGES] || updatedLang.toUpperCase();
+          langDisplay.textContent = updatedDisplayLang;
+          
+          return true;
+        },
+      };
+    };
+  },
+});
+
+export default function RichTextEditorContent({ value, onChange }: RichTextEditorProps) {
+  const [isLoading, setIsLoading] = useState(false);
+  const [prompt, setPrompt] = useState('');
+  const [selectedModel, setSelectedModel] = useState('mistral');
+  const [selectedTone, setSelectedTone] = useState('professional');
+  const [showAIOptions, setShowAIOptions] = useState(false);
+  const [showFormatOptions, setShowFormatOptions] = useState(false);
+  const [selectedTextSize, setSelectedTextSize] = useState('normal');
+  const [selectedAlignment, setSelectedAlignment] = useState('left');
+  const [selectedSpacing, setSelectedSpacing] = useState('normal');
+
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        heading: {
+          levels: [1, 2, 3]
+        },
+        codeBlock: false
+      }),
+      Image.configure({
+        allowBase64: true,
+        HTMLAttributes: {
+          class: 'rounded-lg max-w-full h-auto'
+        }
+      }),
+      Link.configure({
+        HTMLAttributes: {
+          class: 'text-blue-500 hover:text-blue-700 underline',
+          target: '_blank'
+        },
+        openOnClick: false
+      }),
+      CustomCodeBlock.configure({
+        lowlight,
+        HTMLAttributes: {
+          class: 'not-prose'
+        }
+      }),
+      TextAlign.configure({
+        types: ['heading', 'paragraph'],
+        alignments: ['left', 'center', 'right', 'justify'],
+      }),
+      Placeholder.configure({
+        placeholder: 'Commencez à écrire...',
+      }),
+      Typography,
+      Highlight.configure({
+        multicolor: true,
+      }),
+      Color.configure({
+        types: ['textStyle'],
+      }),
+      TextStyle,
+      Underline,
+      Superscript,
+      Subscript,
+      Table.configure({
+        resizable: true,
+        HTMLAttributes: {
+          class: 'border-collapse table-auto w-full',
+        },
+      }),
+      TableRow,
+      TableCell,
+      TableHeader,
+    ],
+    content: value,
+    onUpdate: ({ editor }) => {
+      onChange(editor.getHTML());
+    },
+    editorProps: {
+      attributes: {
+        class: 'prose prose-sm sm:prose lg:prose-lg xl:prose-xl dark:prose-invert focus:outline-none max-w-none min-h-[200px] p-4'
+      }
+    },
+  });
+
+  useEffect(() => {
+    if (editor && value !== editor.getHTML()) {
+      editor.commands.setContent(value);
+    }
+  }, [editor, value]);
+
+  const setLink = () => {
+    const previousUrl = editor?.getAttributes('link').href;
+    const url = window.prompt('URL', previousUrl);
+
+    if (url === null) {
+      return;
+    }
+
+    if (url === '') {
+      editor?.chain().focus().extendMarkRange('link').unsetLink().run();
+      return;
+    }
+
+    editor?.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
+  };
+
+  const addImage = () => {
+    const url = window.prompt('URL');
+    if (url) {
+      editor?.chain().focus().setImage({ src: url }).run();
+    }
+  };
+
+  const addTable = () => {
+    editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
+  };
+
+  const addCodeBlock = () => {
+    const language = window.prompt('Langage (javascript, python, etc...)', 'javascript');
+    if (language) {
+      editor?.chain().focus().toggleCodeBlock({ language }).run();
+    }
+  };
+
+  const sizeStyles = {
+    small: { fontSize: '14px' },
+    normal: { fontSize: '16px' },
+    large: { fontSize: '18px' },
+    xlarge: { fontSize: '20px' }
+  };
+
+  const spacingStyles = {
+    tight: { lineHeight: '1.25' },
+    normal: { lineHeight: '1.5' },
+    relaxed: { lineHeight: '1.75' },
+    loose: { lineHeight: '2' }
+  };
+
+  const applyFormatting = (type: string, value: string) => {
+    if (!editor) return;
+
+    switch (type) {
+      case 'size':
+        const fontSize = sizeStyles[value as keyof typeof sizeStyles].fontSize;
+        editor.chain().focus()
+          .unsetMark('textStyle')
+          .run();
+        editor.chain().focus()
+          .setMark('textStyle', { fontSize })
+          .run();
+        setSelectedTextSize(value);
+        break;
+
+      case 'alignment':
+        editor.chain().focus().setTextAlign(value as 'left' | 'center' | 'right' | 'justify').run();
+        setSelectedAlignment(value);
+        break;
+
+      case 'spacing':
+        const lineHeight = spacingStyles[value as keyof typeof spacingStyles].lineHeight;
+        editor.chain().focus()
+          .unsetMark('textStyle')
+          .run();
+        editor.chain().focus()
+          .setMark('textStyle', { lineHeight })
+          .run();
+        setSelectedSpacing(value);
+        break;
+    }
+  };
+
+  const handleAISuggestion = async () => {
+    if (!prompt.trim() || !editor) return;
+
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/ollama', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: selectedModel,
+          prompt: prompt,
+          tone: selectedTone,
+          context: editor.getHTML(),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Erreur lors de la génération');
+      }
+
+      const data = await response.json();
+      
+      if (data.content) {
+        // Créer une transaction pour l'insertion
+        editor.chain()
+          .focus()
+          .insertContent(data.content)
+          .run();
+        
+        // Afficher les options de mise en page
+        setShowFormatOptions(true);
+      }
+    } catch (error) {
+      console.error('Erreur:', error);
+    } finally {
+      setIsLoading(false);
+      setPrompt('');
+      setShowAIOptions(false);
+    }
+  };
+
+  const renderFormatOptions = () => {
+    if (!showFormatOptions) return null;
+
+    return (
+      <div className="flex flex-wrap gap-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-md shadow-sm">
+        <div className="flex flex-col gap-2">
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+            Taille du texte
+          </label>
+          <select
+            value={selectedTextSize}
+            onChange={(e) => applyFormatting('size', e.target.value)}
+            className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+          >
+            <option value="small">Petit</option>
+            <option value="normal">Normal</option>
+            <option value="large">Grand</option>
+            <option value="xlarge">Très grand</option>
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+            Alignement
+          </label>
+          <select
+            value={selectedAlignment}
+            onChange={(e) => applyFormatting('alignment', e.target.value)}
+            className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+          >
+            <option value="left">Gauche</option>
+            <option value="center">Centre</option>
+            <option value="right">Droite</option>
+            <option value="justify">Justifié</option>
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+            Espacement
+          </label>
+          <select
+            value={selectedSpacing}
+            onChange={(e) => applyFormatting('spacing', e.target.value)}
+            className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+          >
+            <option value="tight">Serré</option>
+            <option value="normal">Normal</option>
+            <option value="relaxed">Détendu</option>
+            <option value="loose">Large</option>
+          </select>
+        </div>
+      </div>
+    );
+  };
+
+  if (!editor) {
+    return null;
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="Que souhaitez-vous générer ?"
+            className="flex-1 px-4 py-3 text-base border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white transition-colors duration-200"
+          />
+          <button
+            type="button"
+            onClick={() => setShowAIOptions(!showAIOptions)}
+            className="inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-md text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 dark:focus:ring-offset-gray-800 transition-colors duration-200"
+          >
+            {showAIOptions ? 'Masquer les options' : 'Afficher les options'}
+          </button>
+          <button
+            type="button"
+            onClick={handleAISuggestion}
+            disabled={isLoading || !prompt.trim()}
+            className={`inline-flex items-center px-6 py-3 text-base font-medium rounded-md text-white ${
+              isLoading || !prompt.trim()
+                ? 'bg-gray-400 cursor-not-allowed'
+                : 'bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500'
+            } transition-colors duration-200`}
+          >
+            {isLoading ? (
+              <>
+                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" strokeWidth="2"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                Génération en cours...
+              </>
+            ) : (
+              'Générer'
+            )}
+          </button>
+        </div>
+
+        {showAIOptions && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 bg-gray-50/50 dark:bg-gray-800/50 rounded-md border border-gray-100 dark:border-gray-700/50 backdrop-blur-sm">
+            <div>
+              <label htmlFor="model" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Modèle
+              </label>
+              <select
+                id="model"
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400 sm:text-sm rounded-md transition-colors duration-200"
+              >
+                {AI_MODELS.map((model) => (
+                  <option key={model.id} value={model.id} className="dark:bg-gray-700">
+                    {model.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="tone" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Ton
+              </label>
+              <select
+                id="tone"
+                value={selectedTone}
+                onChange={(e) => setSelectedTone(e.target.value)}
+                className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400 sm:text-sm rounded-md transition-colors duration-200"
+              >
+                {TONES.map((tone) => (
+                  <option key={tone.id} value={tone.id} className="dark:bg-gray-700">
+                    {tone.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {renderFormatOptions()}
+      </div>
+
+      <div className="border rounded-lg p-4">
+        <div className="border-b border-gray-200 p-2 mb-4 flex flex-wrap gap-2">
+          {/* Styles de texte basiques */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => editor.chain().focus().toggleBold().run()}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive('bold') ? 'bg-gray-100' : ''
+              }`}
+              title="Gras (Ctrl+B)"
+            >
+              <Bold className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => editor.chain().focus().toggleItalic().run()}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive('italic') ? 'bg-gray-100' : ''
+              }`}
+              title="Italique (Ctrl+I)"
+            >
+              <Italic className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => editor.chain().focus().toggleUnderline().run()}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive('underline') ? 'bg-gray-100' : ''
+              }`}
+              title="Souligné (Ctrl+U)"
+            >
+              <UnderlineIcon className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="w-px h-6 bg-gray-200" />
+
+          {/* Alignement */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => editor.chain().focus().setTextAlign('left').run()}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive({ textAlign: 'left' }) ? 'bg-gray-100' : ''
+              }`}
+              title="Aligner à gauche"
+            >
+              <AlignLeft className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => editor.chain().focus().setTextAlign('center').run()}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive({ textAlign: 'center' }) ? 'bg-gray-100' : ''
+              }`}
+              title="Centrer"
+            >
+              <AlignCenter className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => editor.chain().focus().setTextAlign('right').run()}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive({ textAlign: 'right' }) ? 'bg-gray-100' : ''
+              }`}
+              title="Aligner à droite"
+            >
+              <AlignRight className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => editor.chain().focus().setTextAlign('justify').run()}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive({ textAlign: 'justify' }) ? 'bg-gray-100' : ''
+              }`}
+              title="Justifier"
+            >
+              <AlignJustify className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="w-px h-6 bg-gray-200" />
+
+          {/* Listes */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => editor.chain().focus().toggleBulletList().run()}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive('bulletList') ? 'bg-gray-100' : ''
+              }`}
+              title="Liste à puces"
+            >
+              <List className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => editor.chain().focus().toggleOrderedList().run()}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive('orderedList') ? 'bg-gray-100' : ''
+              }`}
+              title="Liste numérotée"
+            >
+              <ListOrdered className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="w-px h-6 bg-gray-200" />
+
+          {/* Éléments spéciaux */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => editor.chain().focus().toggleBlockquote().run()}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive('blockquote') ? 'bg-gray-100' : ''
+              }`}
+              title="Citation"
+            >
+              <Quote className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={setLink}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive('link') ? 'bg-gray-100' : ''
+              }`}
+              title="Lien"
+            >
+              <LinkIcon className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={addImage}
+              className="p-2 rounded hover:bg-gray-100"
+              title="Image"
+            >
+              <ImageIcon className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={addTable}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive('table') ? 'bg-gray-100' : ''
+              }`}
+              title="Tableau"
+            >
+              <TableIcon className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={addCodeBlock}
+              className={`p-2 rounded hover:bg-gray-100 ${
+                editor.isActive('codeBlock') ? 'bg-gray-100' : ''
+              }`}
+              title="Bloc de code"
+            >
+              <Code className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="w-px h-6 bg-gray-200" />
+
+          {/* Annuler/Rétablir */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => editor.chain().focus().undo().run()}
+              disabled={!editor.can().undo()}
+              className="p-2 rounded hover:bg-gray-100 disabled:opacity-50"
+              title="Annuler (Ctrl+Z)"
+            >
+              <Undo className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => editor.chain().focus().redo().run()}
+              disabled={!editor.can().redo()}
+              className="p-2 rounded hover:bg-gray-100 disabled:opacity-50"
+              title="Rétablir (Ctrl+Y)"
+            >
+              <Redo className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        <EditorContent editor={editor} />
+      </div>
+    </div>
+  );
+}
+

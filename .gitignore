@@ -1,0 +1,16 @@
+# Ignorer les fichiers générés par Next.js
+.next/
+
+# Ignorer le dossier des dépendances Node.js
+node_modules/
+prisma/migrations/
+# Ignorer d'autres fichiers volumineux potentiels
+*.pack
+
+# Ignorer le fichier .env
+.env
+.env.example
+
+# Ignorer les fichiers temporaires ou logs (optionnel)
+*.tmp
+*.log

@@ -1,0 +1,43 @@
+/* globals.css */
+
+/* Import des styles Tailwind de base */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Styles des liens de navigation (header) */
+.nav-link {
+  @apply text-sm font-body text-lightText dark:text-darkText px-3 py-2 rounded-md 
+         hover:bg-gray-100 dark:hover:bg-gray-700; 
+  /* Remarquez que toutes les références "nyt-xxx" ont été remplacées :
+     - text-nyt-black -> text-lightText
+     - dark:text-nyt-white -> dark:text-darkText
+     - hover:bg-nyt-gray-100 -> hover:bg-gray-100
+     - dark:hover:bg-nyt-gray-500 -> dark:hover:bg-gray-700
+     Ajustez si besoin pour coller à votre nouvelle palette. */
+}
+
+/* Styles des boutons de navigation */
+.nav-button-primary {
+  @apply inline-flex items-center px-4 py-2 rounded-md bg-primary text-white font-body font-medium 
+         hover:bg-primary/90;
+  /* Remplacez `bg-primary` et `text-white` par vos classes si vous utilisez d'autres noms de couleurs */
+}
+
+.nav-button-secondary {
+  @apply inline-flex items-center px-4 py-2 rounded-md border border-gray-300 dark:border-gray-500 
+         font-body font-medium hover:bg-gray-200 dark:hover:bg-gray-700;
+  /* Idem : "nyt-gray-300" -> "gray-300", etc. */
+}
+
+/* Liens de navigation en mode mobile (plein écran dans le menu burger) */
+.mobile-nav-link {
+  @apply nav-link block w-full;
+  /* On réutilise la classe .nav-link et on ajoute block + w-full */
+}
+
+/* Styles de typographie personnalisés (par ex. pour le rendu d'articles) */
+.prose-nyt h1 {
+  @apply font-headline;
+  /* Conservez cette règle si vous voulez une police headline particulière sur vos titres */
+}
